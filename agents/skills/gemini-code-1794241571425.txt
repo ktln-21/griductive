@@ -1,0 +1,24 @@
+Source/
+├── main.py                     # Entry point khởi chạy NiceGUI server
+├── requirements.txt            # nicegui, pytest, matplotlib (cho phần vẽ biểu đồ thực nghiệm)
+├── README.md                   # Hướng dẫn cài đặt và chạy
+├── assets/                     # Font pixel (Press Start 2P, VT323), sprites, icons
+├── levels/                     # Chứa 50+ file JSON màn chơi đã sinh sẵn
+│   └── levels_manifest.json    # Danh sách 50+ màn chơi (3x3, 4x4, 5x5)
+├── core/
+│   ├── models.py               # Data structures: Character, Clue, Cell, GameState
+│   ├── regions.py              # Xử lý tọa độ lưới, Row, Col, Neighbors, Extensions
+│   ├── semantics.py            # Direct Semantic Evaluator (kiểm tra clue không qua CNF)
+│   └── engine.py               # Game Engine (quản lý trạng thái ẩn/hiện, kiểm tra Verdict)
+├── solver/
+│   ├── cnf_encoder.py          # Chuyển đổi Clue -> CNF, quản lý biến chính & biến phụ
+│   ├── dpll.py                 # DPLL SAT Solver tự code từ đầu + bộ đếm metrics
+│   └── agent.py                # Deductive Logic Agent (Entailment check, Hint, Auto-Solve, Trace)
+├── generator/
+│   └── level_gen.py            # Script tự động sinh và kiểm duyệt 50+ màn chơi No-Guess
+├── benchmark/
+│   └── run_experiments.py      # Script chạy thực nghiệm hàng loạt và xuất bảng số liệu/biểu đồ
+└── ui/
+    ├── theme.py                # CSS Pixel Art 2D, bảng màu retro, hiệu ứng lật thẻ
+    ├── components.py           # Card component, Log panel, Metrics bar, Level selector
+    └── app.py                  # Kết nối sự kiện UI với GameEngine và LogicAgent
