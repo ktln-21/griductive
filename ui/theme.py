@@ -51,6 +51,52 @@ html, body {
     letter-spacing: 1px;
 }
 
+.pixel-main-logo {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 23px;
+    color: #ffcd75;
+    text-shadow: 3px 3px 0px #000;
+    letter-spacing: 2px;
+    line-height: 1;
+}
+
+/* Language Toggle Switch (VI | EN) */
+.lang-switch-box {
+    display: inline-flex;
+    align-items: center;
+    background-color: #121524;
+    border: 3px solid #000;
+    box-shadow: 3px 3px 0px #000;
+    padding: 2px;
+    gap: 2px;
+}
+
+.lang-btn {
+    font-family: 'Press Start 2P', monospace !important;
+    font-size: 10px !important;
+    padding: 5px 10px !important;
+    border: 2px solid transparent !important;
+    border-radius: 0px !important;
+    background-color: #1e243b !important;
+    color: #8b9bb4 !important;
+    cursor: pointer;
+    transition: background-color 0.12s, color 0.12s;
+    min-height: 0 !important;
+    line-height: 1 !important;
+}
+
+.lang-btn:hover {
+    color: #ffffff !important;
+}
+
+.lang-btn-active {
+    background-color: #38b764 !important;
+    color: #000000 !important;
+    border: 2px solid #000000 !important;
+    box-shadow: inset -2px -2px 0px #1e8742 !important;
+    font-weight: bold !important;
+}
+
 .pixel-subtitle {
     font-family: 'Press Start 2P', monospace;
     font-size: 9px;
@@ -651,35 +697,39 @@ window.GriductiveFX = (function() {
 """
 
 
-def format_clue_html(text: str, dark_bg: bool = False) -> str:
+from ui.i18n import translate_clue_text
+
+
+def format_clue_html(text: str, dark_bg: bool = False, lang: str = "VI") -> str:
     """
-    Formats clue text with colored keyword spans for readability,
-    matching the original web detective game style.
+    Formats clue text (in VI or EN) with colored keyword spans for readability,
+    matching the web detective game style.
     """
     if not text:
-        return "<i>No clue</i>"
+        return "<i>Không có manh mối</i>" if lang == "VI" else "<i>No clue</i>"
+    localized = translate_clue_text(text, lang)
     escaped = (
-        text.replace("&", "&amp;")
+        localized.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
     escaped = re.sub(
-        r"(\([A-E][1-5]\)|Row\s+[1-5]|Column\s+[A-E]|the 4 corners|common neighbors)",
+        r"(\([A-E][1-5]\)|Row\s+[1-5]|Column\s+[A-E]|the 4 corners|common neighbors|Hàng\s+[1-5]|Cột\s+[A-E]|4 ô góc|các ô kề chung)",
         r'<span class="kw-coord" style="' + ("color:#73eff7;" if dark_bg else "") + r'">\1</span>',
         escaped,
     )
     escaped = re.sub(
-        r"\b(Criminals?|CRIMINAL)\b",
+        r"(Criminals?|CRIMINAL|Tội phạm|TỘI PHẠM)",
         r'<span class="kw-crim" style="' + ("color:#ff6b72;" if dark_bg else "") + r'">\1</span>',
         escaped,
     )
     escaped = re.sub(
-        r"\b(Innocents?|INNOCENT)\b",
+        r"(Innocents?|INNOCENT|Người vô tội|VÔ TỘI)",
         r'<span class="kw-inno" style="' + ("color:#68e390;" if dark_bg else "") + r'">\1</span>',
         escaped,
     )
     escaped = re.sub(
-        r"\b(SAME|DIFFERENT|NO|ODD|EVEN|MORE|FEWER|Equal|Exactly\s+\d+|At\s+least\s+\d+|At\s+most\s+\d+)\b",
+        r"(SAME|DIFFERENT|NO|ODD|EVEN|MORE|FEWER|Equal|Exactly\s+\d+|At\s+least\s+\d+|At\s+most\s+\d+|CÙNG PHE|KHÁC PHE|KHÔNG CÓ|số LẺ|số CHẴN|NHIỀU HƠN|ÍT HƠN|BẰNG|ĐÚNG\s+\d+|ÍT NHẤT\s+\d+|NHIỀU NHẤT\s+\d+)",
         r'<span class="kw-num" style="' + ("color:#ffcd75;" if dark_bg else "") + r'">\1</span>',
         escaped,
     )

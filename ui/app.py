@@ -1,9 +1,10 @@
 """
 Main Application UI for Griductive Solver using NiceGUI.
 Implements:
-- Zero-jank in-place card updates (BoardCardView) — no full-board reload on moves!
+- Bilingual UI (VI | EN) with top-right toggle and 100% full-interface synchronization
+- Zero-jank in-place card updates (BoardCardView) — no full-board reload on moves or language switch!
 - 3D Card Flip animations & 8-bit pixel particle bursts
-- Built-in Web Audio Chiptune Synthesizer (4 BGM tracks + full SFX suite)
+- Built-in Web Audio Chiptune Synthesizer (4 BGM tracks + full SFX suite including tactile INNO/CRIM press sounds)
 - Audio & Auto-Solve Speed Config Panel (BGM toggle, track switch, BGM/SFX volume sliders, Auto-Solve speed slider)
 - Fixed-height inline Detective Status Bar (no disruptive toast popups)
 """
@@ -11,7 +12,7 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from nicegui import ui
 
@@ -31,21 +32,21 @@ from ui.components import (
     render_deduction_trace,
     render_metrics_panel,
 )
+from ui.i18n import (
+    BGM_TRACKS_I18N,
+    t,
+    translate_clue_text,
+    translate_role_str,
+    translate_stage_name,
+)
 from ui.theme import AUDIO_AND_FX_JS, PIXEL_CSS
 
 
-CHAPTER_INFO = {
-    1: ("CHAP 1: ROOKIE (3x3)", 0),
-    2: ("CHAP 2: INSPECTOR (4x4)", 15),
-    3: ("CHAP 3: MASTERMIND (4x4/5x5)", 35),
-    4: ("CHAP 4: STRESS TEST (5x5)", 50),
-}
-
-BGM_TRACK_OPTIONS = {
-    "noir": "🎵 1. Noir Detective Mystery",
-    "cyber": "🎵 2. Cyber Logic Synth",
-    "trial": "🎵 3. Tense Courtroom Trial",
-    "chill": "🎵 4. Chill Lo-Fi Pixel Cafe",
+CHAPTER_START_INDICES = {
+    1: ("chap_1", 0),
+    2: ("chap_2", 15),
+    3: ("chap_3", 35),
+    4: ("chap_4", 50),
 }
 
 
@@ -57,6 +58,9 @@ class GriductiveApp:
         self.solved_level_indices: Set[int] = set()
         self.engine = GameEngine()
         self.agent = DeductiveLogicAgent()
+
+        # Language State ("VI" or "EN")
+        self.lang: str = "VI"
 
         # UI State
         self.highlighted_cells: Set[str] = set()
@@ -73,8 +77,8 @@ class GriductiveApp:
         self.sfx_volume: int = 70       # 0..100
         self.auto_solve_delay: float = 0.35  # seconds per step (0.10s .. 1.20s)
 
-        # Status bar message
-        self.status_text: str = "Ready! Click a revealed clue to highlight its region, or deduce a suspect."
+        # Structured Status Event so switching VI | EN translates current status message too
+        self.status_event: Tuple[str, Dict[str, Any]] = ("ready", {})
         self.status_kind: str = "info"  # info, accepted, warning, error
 
         self.load_manifest()
@@ -88,6 +92,83 @@ class GriductiveApp:
         with open(self.manifest_path, "r", encoding="utf-8") as f:
             self.levels = json.load(f)
 
+    def format_status_event(self) -> str:
+        """Formats the active status event in the current language (VI or EN)."""
+        ev_type, data = self.status_event
+        lang = self.lang
+
+        if ev_type == "starting_clue":
+            cid = data.get("cid", "")
+            clue_str = translate_clue_text(data.get("clue", ""), lang)
+            if lang == "VI":
+                return f'Manh mối khởi đầu [{cid}]: "{clue_str}"'
+            return f'Starting Clue [{cid}]: "{clue_str}"'
+
+        if ev_type == "clue_selected":
+            cid = data.get("cid", "")
+            clue_str = translate_clue_text(data.get("clue", ""), lang)
+            if lang == "VI":
+                return f'Manh mối [{cid}]: "{clue_str}"'
+            return f'Clue [{cid}]: "{clue_str}"'
+
+        if ev_type == "highlight_cleared":
+            return t("highlight_cleared", lang)
+
+        if ev_type == "accepted":
+            cid = data.get("cid", "")
+            role_disp = translate_role_str(data.get("role", ""), lang)
+            raw_clue = data.get("clue", "")
+            clue_str = translate_clue_text(raw_clue, lang) if raw_clue else ""
+            if lang == "VI":
+                clue_part = f' — Manh mối: "{clue_str}"' if clue_str else ""
+                return f"✓ CHÍNH XÁC! {cid} là {role_disp}{clue_part}"
+            clue_part = f' — Clue: "{clue_str}"' if clue_str else ""
+            return f"✓ ACCEPTED! {cid} is {role_disp}{clue_part}"
+
+        if ev_type == "not_provable":
+            cid = data.get("cid", "")
+            if lang == "VI":
+                return f"⚠️ CHƯA ĐỦ CƠ SỞ! Ô {cid} chưa thể suy luận chắc chắn — Không được đoán mò!"
+            return f"⚠️ NOT PROVABLE! {cid} is not logically forced yet — Do not guess!"
+
+        if ev_type == "contradicted":
+            cid = data.get("cid", "")
+            if lang == "VI":
+                return f"❌ MÂU THUẪN LOGIC! Các manh mối hiện tại bắt buộc ô {cid} phải ở phe ngược lại!"
+            return f"❌ CONTRADICTED! The opposite verdict for {cid} is logically forced by current clues!"
+
+        if ev_type == "hint":
+            cid = data.get("cid", "")
+            name = data.get("name", cid)
+            role_disp = translate_role_str(data.get("role", ""), lang)
+            if lang == "VI":
+                return f"💡 GỢI Ý: {name} ({cid}) chắc chắn là {role_disp}!"
+            return f"💡 HINT: {name} ({cid}) is logically forced to be {role_disp}!"
+
+        if ev_type == "solved":
+            if lang == "VI":
+                return "★ PHÁ ÁN THÀNH CÔNG! Toàn bộ nghi phạm đã được xác định 100% bằng suy luận logic!"
+            return "★ CASE SOLVED! All suspects identified 100% via pure deductive logic!"
+
+        if ev_type == "already_solved":
+            if lang == "VI":
+                return "Màn chơi đã hoàn thành! Hãy nhấn MÀN TIẾP ▶ để tiếp tục."
+            return "Board is already solved! Click NEXT STAGE ▶ to continue."
+
+        if ev_type == "ai_running":
+            if lang == "VI":
+                return "🤖 Thám tử AI đang suy luận từng bước..."
+            return "🤖 AI Detective running step-by-step deduction..."
+
+        if ev_type == "ai_paused":
+            if lang == "VI":
+                return "Đã tạm dừng Tự động giải."
+            return "Auto-Solve paused."
+
+        if lang == "VI":
+            return "Sẵn sàng! Nhấn vào manh mối để soi vùng ô hoặc đưa ra phán quyết."
+        return "Ready! Click a revealed clue to highlight its region, or deduce a suspect."
+
     def set_level(self, idx: int) -> None:
         """Sets the current level and resets state."""
         if 0 <= idx < len(self.levels):
@@ -100,6 +181,8 @@ class GriductiveApp:
             self.hint_target_cell = None
             self.is_auto_solving = False
             self.deduction_steps.clear()
+            self.status_event = ("ready", {})
+            self.status_kind = "info"
 
             init_rev = level_dict.get("initial_revealed", [])
             if init_rev:
@@ -110,7 +193,7 @@ class GriductiveApp:
                         self.engine.revealed_clues[first_cid].referenced_cells
                     )
                     clue_txt = self.engine.revealed_clues[first_cid].text
-                    self.status_text = f'Starting Clue [{first_cid}]: "{clue_txt}"'
+                    self.status_event = ("starting_clue", {"cid": first_cid, "clue": clue_txt})
                     self.status_kind = "info"
 
             self.update_metrics()
@@ -137,7 +220,7 @@ class GriductiveApp:
 
 
 def create_ui():
-    """Main UI builder with zero-jank in-place card updates."""
+    """Main UI builder with zero-jank in-place card updates and bilingual VI | EN switch."""
     app_instance = GriductiveApp()
     app_instance.set_level(0)
 
@@ -148,23 +231,34 @@ def create_ui():
 
     # Top Header Bar
     with ui.header().classes("pixel-panel w-full justify-between items-center").style(
-        "margin-bottom: 4px; padding: 6px 14px;"
+        "margin-bottom: 4px; padding: 8px 16px;"
     ):
-        with ui.row().classes("items-center gap-3"):
-            ui.html('<span style="font-size: 26px;">🕵️</span>')
-            with ui.column().style("gap: 2px;"):
-                ui.label("GRIDUCTIVE SOLVER").classes("pixel-title")
-                ui.label(
-                    f"CSC14003 - Project 2 | {len(app_instance.levels)} No-Guess Stages"
-                ).classes("pixel-subtitle")
+        # TOP-LEFT: Detective Icon + Big Gold "GRIDUCTIVE" (No subtitle below!)
+        with ui.row().classes("items-center").style("gap: 10px;"):
+            ui.html('<span style="font-size: 26px; line-height: 1; display: inline-block;">🕵️</span>')
+            ui.label("GRIDUCTIVE").classes("pixel-main-logo")
 
-        # Chapter Quick-Jump Buttons
+        # CENTER: Chapter Quick-Jump Buttons
         chapter_bar = ui.row().classes("items-center gap-2")
+
+        # TOP-RIGHT: VI | EN Language Toggle Switch (Active side highlighted in green)
+        with ui.element("div").classes("lang-switch-box"):
+            lang_vi_btn = ui.button(
+                "VI",
+                on_click=lambda: switch_language("VI"),
+            ).classes("lang-btn lang-btn-active")
+            ui.label("|").style(
+                "font-family: 'Press Start 2P'; font-size: 10px; color: #566c86; padding: 0 2px;"
+            )
+            lang_en_btn = ui.button(
+                "EN",
+                on_click=lambda: switch_language("EN"),
+            ).classes("lang-btn")
 
     # Main Content Area
     with ui.row().classes("w-full justify-center items-start").style("padding: 4px 12px; gap: 14px;"):
         # LEFT COLUMN: Stage Navigation, Controls, Status Bar & Board
-        with ui.column().classes("items-center").style("min-width: 550px; max-width: 870px; gap: 6px;"):
+        with ui.column().classes("items-center").style("min-width: 560px; max-width: 890px; gap: 6px;"):
             # Stage Selector & Prev/Next Bar
             nav_container = ui.row().classes("pixel-panel w-full justify-between items-center").style(
                 "gap: 8px; padding: 6px 10px;"
@@ -174,33 +268,33 @@ def create_ui():
             with ui.row().classes("pixel-panel w-full justify-around items-center").style(
                 "padding: 6px 10px;"
             ):
-                ui.button(
-                    "🔄 RESTART",
+                restart_btn = ui.button(
+                    t("restart_btn", app_instance.lang),
                     on_click=lambda: on_restart_click(),
                 ).classes("pixel-btn pixel-btn-restart")
-                ui.button(
-                    "💡 HINT",
+                hint_btn = ui.button(
+                    t("hint_btn", app_instance.lang),
                     on_click=lambda: on_hint_click(),
                 ).classes("pixel-btn pixel-btn-hint")
-                ui.button(
-                    "🤖 STEP AI",
+                step_ai_btn = ui.button(
+                    t("step_ai_btn", app_instance.lang),
                     on_click=lambda: on_step_ai_click(),
                 ).classes("pixel-btn pixel-btn-solve")
                 auto_btn = ui.button(
-                    "⚡ AUTO SOLVE",
+                    t("auto_solve_btn", app_instance.lang),
                     on_click=lambda: on_auto_solve_click(),
                 ).classes("pixel-btn pixel-btn-solve")
 
             # FIXED-HEIGHT INLINE STATUS BAR (Never changes height -> 0 screen jump!)
             with ui.element("div").classes("detective-status-bar status-bar-info") as status_bar_el:
-                status_msg_label = ui.label(app_instance.status_text).style(
+                status_msg_label = ui.label(app_instance.format_status_event()).style(
                     "font-family: 'VT323', monospace; font-size: 17.5px; line-height: 1.15; color: #f4f4f4; "
                     "display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;"
                 )
                 next_stage_btn = ui.button(
-                    "NEXT STAGE ▶",
+                    t("next_stage_btn", app_instance.lang),
                     on_click=lambda: go_to_level(app_instance.current_level_idx + 1),
-                ).classes("pixel-btn pixel-btn-hint").style("font-size: 8px; padding: 4px 8px; display: none;")
+                ).classes("pixel-btn pixel-btn-hint").style("font-size: 8px; padding: 4px 8px; display: none; flex-shrink: 0;")
 
             # Grid Board Container
             with ui.column().classes("pixel-panel items-center justify-center w-full").style(
@@ -222,27 +316,21 @@ def create_ui():
                 "background-color: #161a2c; border: 3px solid #000; padding: 8px 10px; gap: 6px;"
             ):
                 with ui.row().classes("w-full justify-between items-center"):
-                    ui.label("🎛️ SOUND & SPEED CONFIG").classes("pixel-title").style("font-size: 11px;")
+                    sound_config_title_lbl = ui.label(t("sound_config_title", app_instance.lang)).classes(
+                        "pixel-title"
+                    ).style("font-size: 11px;")
                     bgm_toggle_btn = ui.button(
-                        "🎵 BGM: OFF",
+                        t("bgm_off", app_instance.lang),
                         on_click=lambda: toggle_bgm(),
                     ).classes("pixel-btn").style("font-size: 8px; padding: 4px 8px;")
 
                 # Track selector row
-                with ui.row().classes("w-full items-center justify-between").style("gap: 8px;"):
-                    ui.label("Track:").style("font-size: 16px; color: #ffcd75; min-width: 48px;")
-                    ui.select(
-                        options=BGM_TRACK_OPTIONS,
-                        value=app_instance.bgm_track,
-                        on_change=lambda e: change_bgm_track(e.value),
-                    ).props("dark outlined dense").style(
-                        "flex: 1; font-family: 'VT323'; font-size: 17px;"
-                    )
+                track_row_container = ui.row().classes("w-full items-center justify-between").style("gap: 8px;")
 
                 # Sliders for BGM Volume, SFX Volume, Auto-Solve Speed
                 with ui.row().classes("w-full items-center justify-between").style("gap: 6px;"):
-                    bgm_vol_label = ui.label(f"BGM Vol: {app_instance.bgm_volume}%").style(
-                        "font-size: 16px; color: #a7f070; min-width: 95px;"
+                    bgm_vol_label = ui.label("").style(
+                        "font-size: 16px; color: #a7f070; min-width: 115px;"
                     )
                     ui.slider(
                         min=0, max=100, step=5, value=app_instance.bgm_volume,
@@ -250,8 +338,8 @@ def create_ui():
                     ).props("dark dense color=green").style("flex: 1;")
 
                 with ui.row().classes("w-full items-center justify-between").style("gap: 6px;"):
-                    sfx_vol_label = ui.label(f"SFX Vol: {app_instance.sfx_volume}%").style(
-                        "font-size: 16px; color: #29adff; min-width: 95px;"
+                    sfx_vol_label = ui.label("").style(
+                        "font-size: 16px; color: #29adff; min-width: 115px;"
                     )
                     ui.slider(
                         min=0, max=100, step=5, value=app_instance.sfx_volume,
@@ -259,8 +347,8 @@ def create_ui():
                     ).props("dark dense color=cyan").style("flex: 1;")
 
                 with ui.row().classes("w-full items-center justify-between").style("gap: 6px;"):
-                    speed_label = ui.label(f"AI Speed: {app_instance.auto_solve_delay:.2f}s").style(
-                        "font-size: 16px; color: #ef7d57; min-width: 95px;"
+                    speed_label = ui.label("").style(
+                        "font-size: 16px; color: #ef7d57; min-width: 115px;"
                     )
                     ui.slider(
                         min=0.10, max=1.20, step=0.05, value=app_instance.auto_solve_delay,
@@ -269,31 +357,92 @@ def create_ui():
 
             # 2. ACTIVE CLUES PANEL
             with ui.row().classes("w-full justify-between items-center"):
-                ui.label("📋 ACTIVE CLUES (GỢI Ý)").classes("pixel-title").style("font-size: 11px;")
-                ui.label("Click clue to highlight region").style("font-size: 15px; color: #a7f070;")
+                active_clues_title_lbl = ui.label(t("active_clues_title", app_instance.lang)).classes(
+                    "pixel-title"
+                ).style("font-size: 11px;")
+                active_clues_sub_lbl = ui.label(t("active_clues_sub", app_instance.lang)).style(
+                    "font-size: 15px; color: #a7f070;"
+                )
 
             clues_container = ui.column().classes("w-full")
 
             # 3. CNF & DPLL METRICS
             with ui.row().classes("w-full justify-between items-center"):
-                ui.label("⚙️ CNF & DPLL METRICS").classes("pixel-title").style("font-size: 11px;")
-                ui.label("Pure Python SAT").style("font-size: 15px; color: #29adff;")
+                metrics_title_lbl = ui.label(t("metrics_title", app_instance.lang)).classes(
+                    "pixel-title"
+                ).style("font-size: 11px;")
+                metrics_sub_lbl = ui.label(t("metrics_sub", app_instance.lang)).style(
+                    "font-size: 15px; color: #29adff;"
+                )
 
             metrics_container = ui.column().classes("w-full")
 
             # 4. DEDUCTION TRACE LOG
             with ui.row().classes("w-full justify-between items-center"):
-                ui.label("📓 DEDUCTION TRACE LOG").classes("pixel-title").style("font-size: 11px;")
+                trace_title_lbl = ui.label(t("trace_title", app_instance.lang)).classes(
+                    "pixel-title"
+                ).style("font-size: 11px;")
 
             trace_container = ui.column().classes("w-full")
 
     # ---------------------------------------------------------
-    # Audio & Speed Config Handlers
+    # Language & Audio Config Updaters
     # ---------------------------------------------------------
+    def update_config_labels() -> None:
+        lang = app_instance.lang
+        sound_config_title_lbl.text = t("sound_config_title", lang)
+        bgm_toggle_btn.text = t("bgm_on", lang) if app_instance.bgm_enabled else t("bgm_off", lang)
+        bgm_vol_label.text = f"{t('bgm_vol_label', lang)}: {app_instance.bgm_volume}%"
+        sfx_vol_label.text = f"{t('sfx_vol_label', lang)}: {app_instance.sfx_volume}%"
+        speed_label.text = f"{t('ai_speed_label', lang)}: {app_instance.auto_solve_delay:.2f}s"
+
+        track_row_container.clear()
+        with track_row_container:
+            ui.label(t("track_label", lang)).style("font-size: 16px; color: #ffcd75; min-width: 68px;")
+            ui.select(
+                options=BGM_TRACKS_I18N.get(lang, BGM_TRACKS_I18N["EN"]),
+                value=app_instance.bgm_track,
+                on_change=lambda e: change_bgm_track(e.value),
+            ).props("dark outlined dense").style(
+                "flex: 1; font-family: 'VT323'; font-size: 17px;"
+            )
+
+        restart_btn.text = t("restart_btn", lang)
+        hint_btn.text = t("hint_btn", lang)
+        step_ai_btn.text = t("step_ai_btn", lang)
+        auto_btn.text = t("stop_ai_btn", lang) if app_instance.is_auto_solving else t("auto_solve_btn", lang)
+        next_stage_btn.text = t("next_stage_btn", lang)
+
+        active_clues_title_lbl.text = t("active_clues_title", lang)
+        active_clues_sub_lbl.text = t("active_clues_sub", lang)
+        metrics_title_lbl.text = t("metrics_title", lang)
+        metrics_sub_lbl.text = t("metrics_sub", lang)
+        trace_title_lbl.text = t("trace_title", lang)
+
+    def switch_language(new_lang: str) -> None:
+        if new_lang not in ("VI", "EN") or new_lang == app_instance.lang:
+            return
+        app_instance.lang = new_lang
+        if new_lang == "VI":
+            lang_vi_btn.classes(add="lang-btn-active")
+            lang_en_btn.classes(remove="lang-btn-active")
+        else:
+            lang_en_btn.classes(add="lang-btn-active")
+            lang_vi_btn.classes(remove="lang-btn-active")
+
+        # Synchronize all UI elements in-place without resetting the board
+        update_config_labels()
+        refresh_navigation()
+        update_board_header_labels()
+        for cv in card_views.values():
+            cv.set_language(new_lang)
+        refresh_side_panels()
+        set_status_event(app_instance.status_event[0], app_instance.status_event[1], app_instance.status_kind)
+
     def toggle_bgm() -> None:
         app_instance.bgm_enabled = not app_instance.bgm_enabled
         if app_instance.bgm_enabled:
-            bgm_toggle_btn.text = "🎵 BGM: ON"
+            bgm_toggle_btn.text = t("bgm_on", app_instance.lang)
             bgm_toggle_btn.classes(add="pixel-btn-innocent")
             ui.run_javascript(
                 f"window.GriductiveFX?.setBGMVolume({app_instance.bgm_volume / 100.0}); "
@@ -301,11 +450,13 @@ def create_ui():
                 f"window.GriductiveFX?.toggleBGM(true);"
             )
         else:
-            bgm_toggle_btn.text = "🎵 BGM: OFF"
+            bgm_toggle_btn.text = t("bgm_off", app_instance.lang)
             bgm_toggle_btn.classes(remove="pixel-btn-innocent")
             ui.run_javascript("window.GriductiveFX?.toggleBGM(false);")
 
     def change_bgm_track(track_key: str) -> None:
+        if track_key == app_instance.bgm_track and app_instance.bgm_enabled:
+            return
         app_instance.bgm_track = track_key
         if not app_instance.bgm_enabled:
             toggle_bgm()
@@ -314,12 +465,12 @@ def create_ui():
 
     def change_bgm_vol(vol_pct: int) -> None:
         app_instance.bgm_volume = vol_pct
-        bgm_vol_label.text = f"BGM Vol: {vol_pct}%"
+        bgm_vol_label.text = f"{t('bgm_vol_label', app_instance.lang)}: {vol_pct}%"
         ui.run_javascript(f"window.GriductiveFX?.setBGMVolume({vol_pct / 100.0});")
 
     def change_sfx_vol(vol_pct: int) -> None:
         app_instance.sfx_volume = vol_pct
-        sfx_vol_label.text = f"SFX Vol: {vol_pct}%"
+        sfx_vol_label.text = f"{t('sfx_vol_label', app_instance.lang)}: {vol_pct}%"
         ui.run_javascript(
             f"window.GriductiveFX?.setSFXVolume({vol_pct / 100.0}); "
             f"window.GriductiveFX?.playSFX('button');"
@@ -327,22 +478,22 @@ def create_ui():
 
     def change_ai_speed(delay_sec: float) -> None:
         app_instance.auto_solve_delay = round(delay_sec, 2)
-        speed_label.text = f"AI Speed: {app_instance.auto_solve_delay:.2f}s"
+        speed_label.text = f"{t('ai_speed_label', app_instance.lang)}: {app_instance.auto_solve_delay:.2f}s"
 
     # ---------------------------------------------------------
     # Status Bar & Header In-Place Updaters (Zero Layout Shift!)
     # ---------------------------------------------------------
-    def set_status_bar(text: str, kind: str = "info") -> None:
-        app_instance.status_text = text
+    def set_status_event(ev_type: str, data: Optional[Dict[str, Any]] = None, kind: str = "info") -> None:
+        app_instance.status_event = (ev_type, data or {})
         app_instance.status_kind = kind
-        status_msg_label.text = text
+        status_msg_label.text = app_instance.format_status_event()
         status_bar_el.classes(
             remove="status-bar-info status-bar-accepted status-bar-warning status-bar-error"
         )
         status_bar_el.classes(add=f"status-bar-{kind}")
 
         if app_instance.engine.is_solved() and app_instance.current_level_idx + 1 < len(app_instance.levels):
-            next_stage_btn.style("font-size: 8px; padding: 4px 8px; display: inline-block;")
+            next_stage_btn.style("font-size: 8px; padding: 4px 8px; display: inline-block; flex-shrink: 0;")
         else:
             next_stage_btn.style("display: none;")
 
@@ -352,8 +503,16 @@ def create_ui():
         lvl_meta = app_instance.engine.level_metadata
         rev_cnt = len(pub_state.revealed_cells)
         tot_cnt = size * size
-        board_title_label.text = f"Chapter {lvl_meta.get('chapter', 1)} — {lvl_meta.get('name', 'Case')}"
-        board_progress_label.text = f"Revealed: {rev_cnt}/{tot_cnt} | Clues: {len(pub_state.revealed_clues)}"
+        lang = app_instance.lang
+        ch_num = lvl_meta.get("chapter", 1)
+        st_name = translate_stage_name(lvl_meta.get("name", "Case"), lang)
+
+        if lang == "VI":
+            board_title_label.text = f"Chương {ch_num} — {st_name}"
+            board_progress_label.text = f"Đã mở: {rev_cnt}/{tot_cnt} | Manh mối: {len(pub_state.revealed_clues)}"
+        else:
+            board_title_label.text = f"Chapter {ch_num} — {st_name}"
+            board_progress_label.text = f"Revealed: {rev_cnt}/{tot_cnt} | Clues: {len(pub_state.revealed_clues)}"
 
     def sync_card_highlights() -> None:
         """Updates card highlights in-place without touching card contents or rebuilding DOM."""
@@ -365,23 +524,25 @@ def create_ui():
             )
 
     def refresh_side_panels() -> None:
-        """Refreshes only the right-side fixed-height panels."""
+        """Refreshes only the right-side fixed-height panels in the active language."""
         pub_state = app_instance.engine.get_public_state()
+        lang = app_instance.lang
         clues_container.clear()
         with clues_container:
             render_active_clues_panel(
                 public_state=pub_state,
                 selected_clue_cell=app_instance.selected_clue_cell,
                 on_clue_click=on_card_or_clue_click,
+                lang=lang,
             )
 
         metrics_container.clear()
         with metrics_container:
-            render_metrics_panel(app_instance.metrics_state)
+            render_metrics_panel(app_instance.metrics_state, lang=lang)
 
         trace_container.clear()
         with trace_container:
-            render_deduction_trace(app_instance.deduction_steps)
+            render_deduction_trace(app_instance.deduction_steps, lang=lang)
 
     # ---------------------------------------------------------
     # Full Board Builder (ONLY called when changing/restarting a level!)
@@ -416,23 +577,25 @@ def create_ui():
                             clue=clue,
                             on_verdict_click=on_verdict_click,
                             on_card_click=on_card_or_clue_click,
+                            lang=app_instance.lang,
                         )
                         card_views[cid] = cv
 
         sync_card_highlights()
 
     def refresh_navigation() -> None:
+        lang = app_instance.lang
         chapter_bar.clear()
         curr_chap = app_instance.levels[app_instance.current_level_idx].get("chapter", 1)
         with chapter_bar:
-            for ch_num, (ch_label, start_idx) in CHAPTER_INFO.items():
+            for ch_num, (ch_key, start_idx) in CHAPTER_START_INDICES.items():
                 btn_cls = (
                     "pixel-btn pixel-btn-chap-active"
                     if curr_chap == ch_num
                     else "pixel-btn"
                 )
                 ui.button(
-                    ch_label,
+                    t(ch_key, lang),
                     on_click=lambda idx=start_idx: go_to_level(idx),
                 ).classes(btn_cls)
 
@@ -442,14 +605,16 @@ def create_ui():
             next_idx = min(len(app_instance.levels) - 1, app_instance.current_level_idx + 1)
 
             ui.button(
-                "◀ PREV",
+                t("prev_btn", lang),
                 on_click=lambda: go_to_level(prev_idx),
             ).classes("pixel-btn")
 
+            chap_word = "Chương" if lang == "VI" else "Chap"
             level_options = {
                 i: (
                     f"{'✓ ' if i in app_instance.solved_level_indices else ''}"
-                    f"[Chap {lvl['chapter']} | {lvl['size']}x{lvl['size']}] {lvl['name']}"
+                    f"[{chap_word} {lvl['chapter']} | {lvl['size']}x{lvl['size']}] "
+                    f"{translate_stage_name(lvl['name'], lang)}"
                 )
                 for i, lvl in enumerate(app_instance.levels)
             }
@@ -457,10 +622,10 @@ def create_ui():
                 options=level_options,
                 value=app_instance.current_level_idx,
                 on_change=lambda e: go_to_level(int(e.value)),
-            ).props("dark outlined dense").style("min-width: 330px; font-family: 'VT323'; font-size: 18px;")
+            ).props("dark outlined dense").style("min-width: 340px; font-family: 'VT323'; font-size: 18px;")
 
             ui.button(
-                "NEXT ▶",
+                t("next_btn", lang),
                 on_click=lambda: go_to_level(next_idx),
             ).classes("pixel-btn")
 
@@ -469,19 +634,17 @@ def create_ui():
     # ---------------------------------------------------------
     def go_to_level(new_idx: int) -> None:
         if 0 <= new_idx < len(app_instance.levels) and new_idx != app_instance.current_level_idx:
-            ui.run_javascript("window.GriductiveFX?.playSFX('button');")
             app_instance.set_level(new_idx)
             refresh_navigation()
             build_board_once()
             refresh_side_panels()
-            set_status_bar(app_instance.status_text, app_instance.status_kind)
+            set_status_event(app_instance.status_event[0], app_instance.status_event[1], app_instance.status_kind)
 
     def on_restart_click() -> None:
-        ui.run_javascript("window.GriductiveFX?.playSFX('button');")
         app_instance.set_level(app_instance.current_level_idx)
         build_board_once()
         refresh_side_panels()
-        set_status_bar(app_instance.status_text, "info")
+        set_status_event(app_instance.status_event[0], app_instance.status_event[1], "info")
 
     def on_card_or_clue_click(cell_id: str) -> None:
         app_instance.hint_target_cell = None
@@ -490,11 +653,11 @@ def create_ui():
             if app_instance.selected_clue_cell == cell_id:
                 app_instance.selected_clue_cell = None
                 app_instance.highlighted_cells.clear()
-                set_status_bar("Highlight cleared.", "info")
+                set_status_event("highlight_cleared", {}, "info")
             else:
                 app_instance.selected_clue_cell = cell_id
                 app_instance.highlighted_cells = set(clue.referenced_cells)
-                set_status_bar(f'Clue [{cell_id}]: "{clue.text}"', "info")
+                set_status_event("clue_selected", {"cid": cell_id, "clue": clue.text}, "info")
             ui.run_javascript("window.GriductiveFX?.playSFX('select');")
         else:
             app_instance.selected_clue_cell = None
@@ -529,14 +692,10 @@ def create_ui():
 
         press_sfx = "press_inno" if role == Role.INNOCENT else "press_crim"
         sfx_kind = "flip_inno" if role == Role.INNOCENT else "flip_crim"
-        # If triggered by AI step, also play the press_inno/press_crim tactile sound first
         pre_js = "" if from_user_click else f"window.GriductiveFX?.playSFX('{press_sfx}', 0); "
 
         if app_instance.engine.is_solved():
-            set_status_bar(
-                "★ CASE SOLVED! All suspects identified 100% via pure deductive logic!",
-                "accepted",
-            )
+            set_status_event("solved", {}, "accepted")
             refresh_navigation()
             ui.run_javascript(
                 f"{pre_js}"
@@ -544,9 +703,9 @@ def create_ui():
                 f"window.GriductiveFX?.playSFX('victory', 95);"
             )
         else:
-            clue_txt = f' — Clue: "{new_clue.text}"' if new_clue else ""
-            set_status_bar(
-                f"✓ ACCEPTED! {cell_id} is {role.value}{clue_txt}",
+            set_status_event(
+                "accepted",
+                {"cid": cell_id, "role": role.value, "clue": new_clue.text if new_clue else ""},
                 "accepted",
             )
             ui.run_javascript(
@@ -573,10 +732,7 @@ def create_ui():
 
         elif res == VerdictResult.NOT_PROVABLE:
             app_instance.update_metrics()
-            set_status_bar(
-                f"⚠️ NOT PROVABLE! {cell_id} is not logically forced yet — Do not guess!",
-                "warning",
-            )
+            set_status_event("not_provable", {"cid": cell_id}, "warning")
             refresh_side_panels()
             ui.run_javascript(
                 f"window.GriductiveFX?.shakeCard('card_{cell_id}'); "
@@ -585,10 +741,7 @@ def create_ui():
 
         elif res == VerdictResult.CONTRADICTED:
             app_instance.update_metrics()
-            set_status_bar(
-                f"❌ CONTRADICTED! The opposite verdict for {cell_id} is logically forced by current clues!",
-                "error",
-            )
+            set_status_event("contradicted", {"cid": cell_id}, "error")
             refresh_side_panels()
             ui.run_javascript(
                 f"window.GriductiveFX?.shakeCard('card_{cell_id}'); "
@@ -599,7 +752,7 @@ def create_ui():
         pub_state = app_instance.engine.get_public_state()
         hint = app_instance.agent.get_hint(pub_state)
         if hint is None:
-            set_status_bar("Board is already solved! Click NEXT STAGE ▶ to continue.", "info")
+            set_status_event("already_solved", {}, "info")
             return
 
         cid = hint["cell_id"]
@@ -611,10 +764,7 @@ def create_ui():
 
         sync_card_highlights()
         refresh_side_panels()
-        set_status_bar(
-            f"💡 HINT: {name} ({cid}) is logically forced to be {role.value}!",
-            "warning",
-        )
+        set_status_event("hint", {"cid": cid, "name": name, "role": role.value}, "warning")
         ui.run_javascript("window.GriductiveFX?.playSFX('hint');")
 
     def on_step_ai_click() -> None:
@@ -622,22 +772,22 @@ def create_ui():
         if step:
             apply_accepted_reveal(step.target_cell, step.verdict, step.to_dict())
         else:
-            set_status_bar("Board is already completely solved!", "info")
+            set_status_event("already_solved", {}, "info")
 
     async def on_auto_solve_click() -> None:
         if app_instance.is_auto_solving:
             app_instance.is_auto_solving = False
-            auto_btn.text = "⚡ AUTO SOLVE"
-            set_status_bar("Auto-Solve paused.", "info")
+            auto_btn.text = t("auto_solve_btn", app_instance.lang)
+            set_status_event("ai_paused", {}, "info")
             return
 
         if app_instance.engine.is_solved():
-            set_status_bar("Case is already solved!", "accepted")
+            set_status_event("already_solved", {}, "accepted")
             return
 
         app_instance.is_auto_solving = True
-        auto_btn.text = "⏹ STOP AI"
-        set_status_bar("🤖 AI Detective running step-by-step deduction...", "info")
+        auto_btn.text = t("stop_ai_btn", app_instance.lang)
+        set_status_event("ai_running", {}, "info")
 
         while not app_instance.engine.is_solved() and app_instance.is_auto_solving:
             step = app_instance.agent.step_solve(app_instance.engine)
@@ -647,15 +797,16 @@ def create_ui():
             await asyncio.sleep(app_instance.auto_solve_delay)
 
         app_instance.is_auto_solving = False
-        auto_btn.text = "⚡ AUTO SOLVE"
+        auto_btn.text = t("auto_solve_btn", app_instance.lang)
 
     # Initial Render
+    update_config_labels()
     refresh_navigation()
     build_board_once()
     refresh_side_panels()
-    set_status_bar(app_instance.status_text, app_instance.status_kind)
+    set_status_event(app_instance.status_event[0], app_instance.status_event[1], app_instance.status_kind)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
     create_ui()
-    ui.run(title="Griductive Solver - CSC14003", port=8080, reload=False)
+    ui.run(title="GRIDUCTIVE", port=8080, reload=False)
